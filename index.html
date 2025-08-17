@@ -1234,13 +1234,13 @@ function refreshSelectors() {
   // Set options - use 17.2 display for pool fence but keep 17.52 as value
   let opts;
   if (pool) {
+    // Pool fences are limited to toughened glass only. 13.52 mm laminated and 17.52 mm laminated glass are not permitted.
     opts = [
       {value: '12', display: '12'},
-      {value: '15', display: '15'},
-      {value: '17.52', display: '17.2'}
+      {value: '15', display: '15'}
     ];
   } else {
-    // Balustrade
+    // Balustrade: allow all four thicknesses (12, 13.52, 15, 17.52 mm)
     opts = [
       {value: '12', display: '12'},
       {value: '13.52', display: '13.52'},
@@ -1283,9 +1283,10 @@ function refreshSelectors() {
     });
   }
 
+  // For pool fences, only allow heights between 1200 mm and 1300 mm. Balustrades can use the full range.
   document.querySelectorAll('#glassHt option')
-    .forEach(o => o.disabled = pool && (+o.textContent < 1200 || +o.textContent > 1250));
-  if(pool && (+$('glassHt').value < 1200 || +$('glassHt').value > 1250)) $('glassHt').value = '1200';
+    .forEach(o => o.disabled = pool && (+o.textContent < 1200 || +o.textContent > 1300));
+  if(pool && (+$('glassHt').value < 1200 || +$('glassHt').value > 1300)) $('glassHt').value = '1200';
 
   // Save current handrail selection
   const handrailSelect = $('handrailType');
@@ -1384,29 +1385,30 @@ function refreshSelectors() {
       }
     }
   };
+  // Generic symmetric and mixed panel solvers now use 25 mm increments instead of 50 mm.
   const sym = (run,min,max,maxP) => {
-    let cnt=Math.ceil(run/maxP);
-    while(cnt<600){
-      let pw=Math.min(maxP,Math.floor(run/cnt/50)*50);
-      while(pw>=200){
-        const gap=(run-pw*cnt)/(cnt+1);
-        if(gap>=min&&gap<=max) return {panelWidths:Array(cnt).fill(pw),gap,run};
-        pw-=50;
+    let cnt = Math.ceil(run / maxP);
+    while(cnt < 600){
+      let pw = Math.min(maxP, Math.floor(run / cnt / 25) * 25);
+      while(pw >= 200){
+        const gap = (run - pw * cnt) / (cnt + 1);
+        if(gap >= min && gap <= max) return { panelWidths: Array(cnt).fill(pw), gap, run };
+        pw -= 25;
       }
       cnt++;
     }
     return null;
   };
   const mix = (run,min,max,maxP) => {
-    let cnt=Math.ceil(run/maxP);
-    while(cnt<600){
-      for(let A=maxP;A>=200;A-=50){
-        for(let B=A;B>=A-200;B-=50){
-          for(let k=1;k<cnt;k++){
-            const tot=(cnt-k)*A+k*B,
-                  gap=(run-tot)/(cnt+1);
-            if(gap>=min&&gap<=max){
-              return {panelWidths:[...Array(cnt-k).fill(A),...Array(k).fill(B)],gap,run};
+    let cnt = Math.ceil(run / maxP);
+    while(cnt < 600){
+      for(let A = maxP; A >= 200; A -= 25){
+        for(let B = A; B >= A - 200; B -= 25){
+          for(let k = 1; k < cnt; k++){
+            const tot = (cnt - k) * A + k * B,
+                  gap = (run - tot) / (cnt + 1);
+            if(gap >= min && gap <= max){
+              return { panelWidths: [...Array(cnt - k).fill(A), ...Array(k).fill(B)], gap, run };
             }
           }
         }
@@ -1505,18 +1507,27 @@ function refreshSelectors() {
     let edge = ps1Row.edge;
     if (typeof EDGE_MIN !== 'undefined' && edge < EDGE_MIN) edge = EDGE_MIN;
     let MAX_SPACING = ps1Row.internal;
-    if (MAX_SPACING >= 999) {
+    // Treat 1000 mm spacing as valid (some pool fence cases); only values above 999 denote an invalid combination
+    if (MAX_SPACING > 999) {
       return alert(`⚠️ Warning: ${thk}mm glass at ${ht}mm height in ${zone} wind zone is not suitable for ${pool ? 'pool fence' : 'balustrade'} applications.\n\nThis combination exceeds SP12 PS1 structural limits. Please adjust your selections:\n• Try a different glass thickness\n• Try a different glass height\n• Try a lower wind zone if applicable`);
     }
-    if (MAX_SPACING >= 999) {
+    if (MAX_SPACING > 999) {
       return alert(`⚠️ Warning: ${thk}mm glass at ${ht}mm height in ${zone} wind zone is not suitable for ${pool ? 'pool fence' : 'balustrade'} applications.\n\nThis combination exceeds SP12 PS1 structural limits. Please adjust your selections:\n• Try a different glass thickness\n• Try a different glass height\n• Try a lower wind zone if applicable`);
     }
     // Determine spigot mode (auto / 2 / 3)
     const spigotMode = (document.querySelector('input[name="spigotMode"]:checked') || {}).value || 'auto';
     let MAX_DISCS_PER_PANEL;
-    if (spigotMode === '2') MAX_DISCS_PER_PANEL = 2;
-    else if (spigotMode === '3') MAX_DISCS_PER_PANEL = 3;
-    else MAX_DISCS_PER_PANEL = Infinity;
+    if (spigotMode === '2') {
+      // Force exactly two spigots per panel when the 2‑spigot mode is selected.
+      MAX_DISCS_PER_PANEL = 2;
+    } else if (spigotMode === '3') {
+      // Allow up to three spigots per panel in 3‑spigot mode. Smaller panels may still use fewer spigots.
+      MAX_DISCS_PER_PANEL = 3;
+    } else {
+      // In auto mode we allow up to four spigots per panel. This gives the solver flexibility for very wide panels
+      // while still respecting the 2000 mm blanket maximum panel width and handrail restrictions.
+      MAX_DISCS_PER_PANEL = 4;
+    }
 
     // Max panel width by rails
     let cap = 2000;
@@ -1530,15 +1541,16 @@ function refreshSelectors() {
 
     // Dynamic gap and panel layout logic
     // Gap allowances per specification
-    // Pool fences allow 10–60 mm gaps; balustrades allow 10–26 mm gaps
-    const gMin = 10, gMax = fence === 'pool' ? 60 : 26;
+    // Updated gap ranges: Balustrade gaps 10–25 mm (aim 15–25 mm), Pool fence gaps 10–50 mm (aim 20–30 mm)
+    const gMin = 10, gMax = fence === 'pool' ? 50 : 25;
     layouts = []; sideLens = spans;
     let total = 0, panels = [], posts = 0, rails = 0, gasket = 0, handrailMeters = 0;
 
     function sd50Sym(run, minGap, maxGap, maxPanel) {
       let cnt = Math.ceil(run / maxPanel);
       while (cnt < 600) {
-        let pw = Math.min(maxPanel, Math.floor(run / cnt / 50) * 50);
+        // Panel widths are calculated in 25 mm increments rather than 50 mm to provide finer resolution.
+        let pw = Math.min(maxPanel, Math.floor(run / cnt / 25) * 25);
         while (pw >= 200) {
           let discs = Math.max(2, Math.ceil((pw - 2 * edge) / MAX_SPACING) + 1);
           if (discs > MAX_DISCS_PER_PANEL) {
@@ -1551,7 +1563,7 @@ function refreshSelectors() {
           if (gap >= minGap && gap <= maxGap) {
             return { panelWidths: Array(cnt).fill(pw), gap, run };
           }
-          pw -= 50;
+          pw -= 25;
         }
         cnt++;
       }
@@ -1560,8 +1572,9 @@ function refreshSelectors() {
     function sd50Mix(run, minGap, maxGap, maxPanel) {
       let cnt = Math.ceil(run / maxPanel);
       while (cnt < 600) {
-        for (let A = maxPanel; A >= 200; A -= 50) {
-          for (let B = A; B >= A - 200; B -= 50) {
+        // Iterate panel widths in 25 mm steps instead of 50 mm. B can differ from A by up to 200 mm.
+        for (let A = maxPanel; A >= 200; A -= 25) {
+          for (let B = A; B >= A - 200; B -= 25) {
             for (let k = 1; k < cnt; k++) {
               let discsA = Math.max(2, Math.ceil((A - 2 * edge) / MAX_SPACING) + 1);
               let discsB = Math.max(2, Math.ceil((B - 2 * edge) / MAX_SPACING) + 1);
@@ -1700,8 +1713,8 @@ function refreshSelectors() {
       
       console.log(`Validating hinge panel for gate at position: ${gatePosition}, hingeOnLeft: ${gateSegment.hingeOnLeft}`);
       
-      // Allowed hinge panel sizes: 800-1500mm in 100mm increments
-      const allowedHingeSizes = [800, 900, 1000, 1100, 1200, 1300, 1400, 1500];
+      // Allowed hinge panel sizes: 1000–2000 mm in 100 mm increments
+      const allowedHingeSizes = [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000];
       
       // Check if uniform panels is enabled - if so, skip hinge panel validation
       const uniformCheckbox = document.getElementById('uniformPanels');
@@ -4288,6 +4301,14 @@ document.getElementById('view3dBtn').onclick = () => {
     const sideCount = pts.length - 1;const runsAligned = [];for (let i = 0; i < sideCount; i++) {  const L = layouts[i];  if (L && Array.isArray(L.panelWidths)) { runsAligned.push(L); }  else {    const segLen = Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);    runsAligned.push({ panelWidths: [], gap: 0, run: segLen, missing: true });  }}const fence = $('fenceType').value;const pool = fence === 'pool';const thk = $('glassThk').value;const ht = $('glassHt').value;const zone = $('windZone').value;let __maxSpacing = 400;let __edgeMax = 200;{const sys = pool ? 'pool' : 'balustrade';if (typeof ps13Lookup === 'function'){const row = ps13Lookup(sys, thk, ht, zone);if (row && row.internal < 999){__maxSpacing = row.internal;__edgeMax = row.edge;}}if (typeof EDGE_MIN !== 'undefined' && __edgeMax < EDGE_MIN) __edgeMax = EDGE_MIN;}const spMode = (document.querySelector('input[name="spigotMode"]:checked') || {}).value || 'auto';let __maxDiscsPerPanel = Infinity;if (spMode === '2') __maxDiscsPerPanel = 2;else if (spMode === '3') __maxDiscsPerPanel = 3;const view3dData = { runs: runsAligned, pts: pts, sideLens: sideLens, curShape: curShape, handrailType: $('handrailType').value, finishType: $('finishType').value, maxSpacing: __maxSpacing, edgeMax: __edgeMax, maxDiscsPerPanel: __maxDiscsPerPanel, pool: pool, thk: thk, ht: ht, zone: zone };
 
     // Create the 3D view HTML
+    // Adjust maxDiscsPerPanel based on the selected spigot mode before generating the 3D HTML.
+    if (spMode === '2') {
+      view3dData.maxDiscsPerPanel = 2;
+    } else if (spMode === '3') {
+      view3dData.maxDiscsPerPanel = 3;
+    } else {
+      view3dData.maxDiscsPerPanel = 4;
+    }
     const html3d = generate3DViewHTML(view3dData);
     // Render the 3D view inside a full-screen iframe overlay instead of a
     // separate window.  Data URIs and document.write often fail in modern

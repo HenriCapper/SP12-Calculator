@@ -1260,20 +1260,19 @@ function refreshSelectors() {
   }
 
   // Handle pool fence thickness restrictions by wind zone
-  if(pool) {
-    if (zone === 'VH' || zone === 'EH') {
-      // 12mm not suitable for VH/EH
-      const opt12 = thk.querySelector('option[value="12"]');
-      if(opt12) opt12.disabled = true;
-      if(thk.value === '12') thk.value = '15';
-    }
+  if (pool) {
+    /*
+     * For pool fences, only toughened glass (12 mm or 15 mm) may be selected. Laminated thicknesses
+     * (13.52 mm and 17.52 mm) are not offered at all (see options above). Within those two options:
+     *  - In EX High (EH) wind zones, 12 mm glass is not suitable. The 15 mm option remains and will
+     *    be selected automatically if the user had 12 mm chosen previously. 12 mm remains available
+     *    for all other wind zones (L, M, H, VH).  We do not force 17.52 mm for pool fences since
+     *    laminated glass is never permitted for pool applications.
+     */
     if (zone === 'EH') {
-      // Only 17.52mm suitable for EH
-      ['12', '15'].forEach(val => {
-        const opt = thk.querySelector(`option[value="${val}"]`);
-        if(opt) opt.disabled = true;
-      });
-      thk.value = '17.52';
+      const opt12 = thk.querySelector('option[value="12"]');
+      if (opt12) opt12.disabled = true;
+      if (thk.value === '12') thk.value = '15';
     }
   } else {
     // Re-enable all options for balustrade
@@ -1508,10 +1507,8 @@ function refreshSelectors() {
     if (typeof EDGE_MIN !== 'undefined' && edge < EDGE_MIN) edge = EDGE_MIN;
     let MAX_SPACING = ps1Row.internal;
     // Treat 1000 mm spacing as valid (some pool fence cases); only values above 999 denote an invalid combination
-    if (MAX_SPACING > 999) {
-      return alert(`⚠️ Warning: ${thk}mm glass at ${ht}mm height in ${zone} wind zone is not suitable for ${pool ? 'pool fence' : 'balustrade'} applications.\n\nThis combination exceeds SP12 PS1 structural limits. Please adjust your selections:\n• Try a different glass thickness\n• Try a different glass height\n• Try a lower wind zone if applicable`);
-    }
-    if (MAX_SPACING > 999) {
+    // Treat an internal spacing of exactly 1000 mm as a valid pool fence case. Only values strictly above 1000 mm denote an invalid combination.
+    if (MAX_SPACING > 1000) {
       return alert(`⚠️ Warning: ${thk}mm glass at ${ht}mm height in ${zone} wind zone is not suitable for ${pool ? 'pool fence' : 'balustrade'} applications.\n\nThis combination exceeds SP12 PS1 structural limits. Please adjust your selections:\n• Try a different glass thickness\n• Try a different glass height\n• Try a lower wind zone if applicable`);
     }
     // Determine spigot mode (auto / 2 / 3)
@@ -1599,12 +1596,19 @@ function refreshSelectors() {
       const gateAdjustedSym = (run, min, max, maxP) => {
         let cnt = Math.ceil(run / maxP);
         while (cnt < 600) {
-          let pw = Math.min(maxP, Math.floor(run / cnt / 50) * 50);
+          /*
+           * Iterate panel widths in 25 mm increments rather than 50 mm to provide a finer resolution
+           * for gate runs. We clamp the initial panel width down to the nearest multiple of 25 mm
+           * not exceeding maxP and then step down by 25 mm on each iteration until reaching
+           * the minimum width of 200 mm. This matches the updated specification for panel size
+           * increments in gate scenarios.
+           */
+          let pw = Math.min(maxP, Math.floor(run / cnt / 25) * 25);
           while (pw >= 200) {
             // Modified gap calculation: cnt gaps instead of cnt+1 (gate replaces one gap)
             const gap = (run - pw * cnt) / cnt;
             if (gap >= min && gap <= max) return { panelWidths: Array(cnt).fill(pw), gap, run };
-            pw -= 50;
+            pw -= 25;
           }
           cnt++;
         }
@@ -1614,8 +1618,13 @@ function refreshSelectors() {
       const gateAdjustedMix = (run, min, max, maxP) => {
         let cnt = Math.ceil(run / maxP);
         while (cnt < 600) {
-          for (let A = maxP; A >= 200; A -= 50) {
-            for (let B = A; B >= A - 200; B -= 50) {
+          /*
+           * Iterate A and B in 25 mm increments rather than 50 mm to match updated panel size rules.
+           * Primary width A steps down by 25 mm until 200 mm. For each A, secondary width B steps
+           * down in 25 mm steps, allowing B to differ from A by up to 200 mm.
+           */
+          for (let A = maxP; A >= 200; A -= 25) {
+            for (let B = A; B >= A - 200; B -= 25) {
               for (let k = 1; k < cnt; k++) {
                 const tot = (cnt - k) * A + k * B;
                 // Modified gap calculation: cnt gaps instead of cnt+1

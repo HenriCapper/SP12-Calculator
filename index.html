@@ -89,6 +89,9 @@ SP12 Designer Notes:
   ];
   // Minimum allowed edge distance (mm). PS1 defines maximum only; we enforce a conservative minimum of 100 mm.
   const EDGE_MIN = 100;
+  // Panel width increment step (default 25 mm). This value will be
+  // updated dynamically depending on the selected Glass Mode (Standard vs Stock).
+  let PANEL_STEP = 25;
   /**
    * Look up the SP12 PS1 row matching the given system ('pool' or 'balustrade'), glass thickness (string or number),
    * glass height (string or number) and wind zone code (L,M,H,VH,EH). Returns the closest height band if the exact
@@ -695,11 +698,26 @@ body > *:not(.container) img[src*="opus"] {
         <input id="cornerCount" type="hidden">
 
         <!-- mixed‐panel checkbox -->
-        <div style="grid-column:1/2">
+        <div id="allowMixedContainer" style="grid-column:1/2">
           <label>
             <input type="checkbox" id="allowMixed">
             Allow mixed panel sizes (±200 mm)
           </label>
+        </div>
+        <!-- Glass Mode & Gap selectors (relocated for compact layout) -->
+        <div style="grid-column:1/3; margin-top:0.5rem; display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end;">
+          <div style="min-width:140px;">
+            <label>Glass Mode</label>
+            <!-- Reuse the existing glassType id so that existing JavaScript continues to work -->
+            <select id="glassType" style="width:100%; min-width:120px;">
+              <option value="standard" selected>Standard</option>
+              <option value="stock">Stock Sizes</option>
+            </select>
+          </div>
+          <div id="gapSelectContainer" style="min-width:140px;">
+            <label>Gap size (mm)</label>
+            <select id="gapSize" style="width:100%; min-width:120px;"></select>
+          </div>
         </div>
         <div>
           <!-- SP12 spigot mode selector -->
@@ -1388,11 +1406,11 @@ function refreshSelectors() {
   const sym = (run,min,max,maxP) => {
     let cnt = Math.ceil(run / maxP);
     while(cnt < 600){
-      let pw = Math.min(maxP, Math.floor(run / cnt / 25) * 25);
+      let pw = Math.min(maxP, Math.floor(run / cnt / PANEL_STEP) * PANEL_STEP);
       while(pw >= 200){
         const gap = (run - pw * cnt) / (cnt + 1);
         if(gap >= min && gap <= max) return { panelWidths: Array(cnt).fill(pw), gap, run };
-        pw -= 25;
+        pw -= PANEL_STEP;
       }
       cnt++;
     }
@@ -1401,8 +1419,8 @@ function refreshSelectors() {
   const mix = (run,min,max,maxP) => {
     let cnt = Math.ceil(run / maxP);
     while(cnt < 600){
-      for(let A = maxP; A >= 200; A -= 25){
-        for(let B = A; B >= A - 200; B -= 25){
+      for(let A = maxP; A >= 200; A -= PANEL_STEP){
+        for(let B = A; B >= A - 200; B -= PANEL_STEP){
           for(let k = 1; k < cnt; k++){
             const tot = (cnt - k) * A + k * B,
                   gap = (run - tot) / (cnt + 1);
@@ -1421,6 +1439,57 @@ function refreshSelectors() {
     return Object.entries(m).map(([w,n])=>`${n}× @${w} mm`).join('<br>');
   };
 
+  // ─── Glass Mode and Gap selectors logic ───────────────────
+  // Populate gap options based on fence type and toggle UI based on glass mode.
+  function updateGapOptions() {
+    const fenceVal = $('fenceType') ? $('fenceType').value : '';
+    const gapSelect = $('gapSize');
+    if (!gapSelect) return;
+    // Clear existing options
+    gapSelect.innerHTML = '';
+    // Determine gap range: 14–20 mm for balustrade, 14–99 mm for pool fences
+    let minGap = 14;
+    let maxGap = (fenceVal === 'pool') ? 99 : 20;
+    for (let g = minGap; g <= maxGap; g++) {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = g;
+      gapSelect.appendChild(opt);
+    }
+    // Default to 20 mm if within range
+    if (20 >= minGap && 20 <= maxGap) gapSelect.value = 20;
+  }
+
+  function updateGlassModeUI() {
+    const glassModeEl = $('glassType');
+    const mode = glassModeEl ? glassModeEl.value : 'standard';
+    const allowMixedContainer = document.getElementById('allowMixedContainer');
+    const gapSelectContainer = document.getElementById('gapSelectContainer');
+    if (!allowMixedContainer || !gapSelectContainer) return;
+    if (mode === 'standard') {
+      // In Standard mode we now automatically choose the best gap. Hide the gap selector entirely
+      // and show only the mixed‑panel checkbox for Stock sizes mode. The gap selector is unused in
+      // Standard mode to avoid locking the user to a fixed gap; the solver will determine the
+      // optimal gap within the allowed range (14–20 mm for balustrade or 14–99 mm for pool).
+      gapSelectContainer.style.display = 'none';
+      allowMixedContainer.style.display = 'none';
+    } else {
+      // In Stock Sizes mode we hide the gap selector and show the mixed‑panel checkbox
+      gapSelectContainer.style.display = 'none';
+      allowMixedContainer.style.display = '';
+    }
+  }
+
+  // Initialize gap and glass mode UI once the DOM has loaded
+  document.addEventListener('DOMContentLoaded', () => {
+    updateGlassModeUI();
+    updateGapOptions();
+    const fenceSelect = $('fenceType');
+    if (fenceSelect) fenceSelect.addEventListener('change', updateGapOptions);
+    const glassTypeSelect = $('glassType');
+    if (glassTypeSelect) glassTypeSelect.addEventListener('change', updateGlassModeUI);
+  });
+
   // ─── Calculate ─────────────────────────────────────────────
   $('calcBtn').onclick = function() {
     console.log('Calculate button clicked');
@@ -1434,13 +1503,24 @@ function refreshSelectors() {
     }
 
     const fence = $('fenceType').value;
-    const thk = $('glassThk').value;
-    const ht = $('glassHt').value;
-    const zone = $('windZone').value;
-    const hr = $('handrailType').value;
-    const fin = $('finishType').value;
-    const fix = $('fixingType').value;
-    const allowMix = $('allowMixed').checked;
+    const thk   = $('glassThk').value;
+    const ht    = $('glassHt').value;
+    const zone  = $('windZone').value;
+    const hr    = $('handrailType').value;
+    const fin   = $('finishType').value;
+    const fix   = $('fixingType').value;
+    // Determine glass mode and selected gap for dynamic step and mixing
+    const glassMode   = $('glassType') ? $('glassType').value : 'standard';
+    const gapSelectEl = $('gapSize');
+    const selectedGap = gapSelectEl && gapSelectEl.value ? +gapSelectEl.value : 20;
+    // Update panel increment step.  For Stock Sizes mode we continue using 25 mm increments.
+    // In Standard mode panels may be any size (continuous) rather than stepping by a fixed
+    // increment.  Setting PANEL_STEP to 0 indicates that the solver should derive the panel
+    // width exactly and avoid rounding to discrete increments.  The calculated widths will
+    // later be displayed rounded to two decimal places for clarity.
+    PANEL_STEP = glassMode === 'standard' ? 0 : 25;
+    // In Standard mode mixed panel sizes are not allowed; otherwise use user selection
+    const allowMix = glassMode === 'standard' ? false : $('allowMixed').checked;
     // SP12: Extra packers are not applicable; set to zero to avoid null errors
     const extraPackers = 0;
 
@@ -1539,15 +1619,64 @@ function refreshSelectors() {
     // Dynamic gap and panel layout logic
     // Gap allowances per specification
     // Updated gap ranges: Balustrade gaps 10–25 mm (aim 15–25 mm), Pool fence gaps 10–50 mm (aim 20–30 mm)
-    const gMin = 10, gMax = fence === 'pool' ? 50 : 25;
+    // Determine gap range based on selected glass mode. For Standard mode the gap is fixed to the chosen value,
+    // otherwise use the default ranges for Balustrade and Pool fences.
+    let gMin, gMax;
+    if (glassMode === 'standard') {
+      // For Standard mode we no longer lock the gap to a user‑selected value. Instead, set the gap
+      // range to the full allowable range: 14–20 mm for balustrade or 14–99 mm for pool. The solver
+      // will choose the optimal gap within this range.
+      gMin = 14;
+      gMax = fence === 'pool' ? 99 : 20;
+    } else {
+      // Stock sizes mode retains the broader gap range (10–25 mm for balustrade; 10–50 mm for pool)
+      gMin = 10;
+      gMax = fence === 'pool' ? 50 : 25;
+    }
     layouts = []; sideLens = spans;
     let total = 0, panels = [], posts = 0, rails = 0, gasket = 0, handrailMeters = 0;
 
     function sd50Sym(run, minGap, maxGap, maxPanel) {
       let cnt = Math.ceil(run / maxPanel);
       while (cnt < 600) {
-        // Panel widths are calculated in 25 mm increments rather than 50 mm to provide finer resolution.
-        let pw = Math.min(maxPanel, Math.floor(run / cnt / 25) * 25);
+        /*
+         * When using sub‑millimetre panel steps (e.g. 0.1 mm) and a fixed gap range (minGap === maxGap),
+         * scanning every possible panel width is computationally expensive. Instead, compute the
+         * candidate panel width directly from the selected gap. For Standard mode the gap range is
+         * collapsed to a single value, so we can derive the ideal panel width without iterating.
+         */
+        // For Standard mode (single fixed gap) we can derive the panel width directly
+        // from the run length and desired gap.  When PANEL_STEP is <= 0 we allow
+        // continuous panel widths; otherwise widths are rounded down to the nearest
+        // increment.  This branch avoids scanning over large ranges of panel sizes.
+        if ((PANEL_STEP <= 0 || PANEL_STEP < 1) && Math.abs(minGap - maxGap) < 1e-9) {
+          const desiredGap = minGap;
+          // Derive panel width from run length, gap and panel count
+          let pw = (run - desiredGap * (cnt + 1)) / cnt;
+          if (PANEL_STEP > 0) {
+            // When using a small but non‑zero step, round down to the nearest increment
+            pw = Math.floor(pw / PANEL_STEP) * PANEL_STEP;
+          }
+          if (pw >= 200) {
+            // Determine number of spigots/discs for this width and adjust if necessary
+            let discs = Math.max(2, Math.ceil((pw - 2 * edge) / MAX_SPACING) + 1);
+            if (discs > MAX_DISCS_PER_PANEL) {
+              pw = edge * 2 + (MAX_DISCS_PER_PANEL - 1) * MAX_SPACING;
+            } else {
+              const maxPanelWidth = edge * 2 + (discs - 1) * MAX_SPACING;
+              if (pw > maxPanelWidth) pw = maxPanelWidth;
+            }
+            const gap = (run - pw * cnt) / (cnt + 1);
+            if (gap >= minGap && gap <= maxGap) {
+              return { panelWidths: Array(cnt).fill(pw), gap, run };
+            }
+          }
+          cnt++;
+          continue;
+        }
+        // Otherwise fall back to iterative search over panel widths
+        // Panel widths are calculated in PANEL_STEP increments to provide finer resolution.
+        let pw = Math.min(maxPanel, Math.floor(run / cnt / PANEL_STEP) * PANEL_STEP);
         while (pw >= 200) {
           let discs = Math.max(2, Math.ceil((pw - 2 * edge) / MAX_SPACING) + 1);
           if (discs > MAX_DISCS_PER_PANEL) {
@@ -1560,7 +1689,7 @@ function refreshSelectors() {
           if (gap >= minGap && gap <= maxGap) {
             return { panelWidths: Array(cnt).fill(pw), gap, run };
           }
-          pw -= 25;
+          pw -= PANEL_STEP;
         }
         cnt++;
       }
@@ -1570,8 +1699,8 @@ function refreshSelectors() {
       let cnt = Math.ceil(run / maxPanel);
       while (cnt < 600) {
         // Iterate panel widths in 25 mm steps instead of 50 mm. B can differ from A by up to 200 mm.
-        for (let A = maxPanel; A >= 200; A -= 25) {
-          for (let B = A; B >= A - 200; B -= 25) {
+        for (let A = maxPanel; A >= 200; A -= PANEL_STEP) {
+          for (let B = A; B >= A - 200; B -= PANEL_STEP) {
             for (let k = 1; k < cnt; k++) {
               let discsA = Math.max(2, Math.ceil((A - 2 * edge) / MAX_SPACING) + 1);
               let discsB = Math.max(2, Math.ceil((B - 2 * edge) / MAX_SPACING) + 1);
@@ -1597,18 +1726,35 @@ function refreshSelectors() {
         let cnt = Math.ceil(run / maxP);
         while (cnt < 600) {
           /*
-           * Iterate panel widths in 25 mm increments rather than 50 mm to provide a finer resolution
-           * for gate runs. We clamp the initial panel width down to the nearest multiple of 25 mm
-           * not exceeding maxP and then step down by 25 mm on each iteration until reaching
-           * the minimum width of 200 mm. This matches the updated specification for panel size
-           * increments in gate scenarios.
+           * When using very small panel steps (e.g. 0.1 mm) and a fixed gap range, scanning
+           * can be prohibitively expensive. For Standard mode (min === max), derive the panel
+           * width directly from the desired gap and avoid iteration. For gate scenarios the
+           * number of gaps equals the number of panels (cnt).
            */
-          let pw = Math.min(maxP, Math.floor(run / cnt / 25) * 25);
+          if ((PANEL_STEP <= 0 || PANEL_STEP < 1) && Math.abs(min - max) < 1e-9) {
+            const desiredGap = min;
+            // Derive panel width for gate: run = cnt*pw + cnt*gap → pw = run/cnt - gap
+            let pw = (run / cnt) - desiredGap;
+            if (PANEL_STEP > 0) {
+              // Round down to the nearest increment when a finite step is defined
+              pw = Math.floor(pw / PANEL_STEP) * PANEL_STEP;
+            }
+            if (pw >= 200) {
+              // Compute gap with rounded width
+              const gap = (run - pw * cnt) / cnt;
+              if (gap >= min && gap <= max) {
+                return { panelWidths: Array(cnt).fill(pw), gap, run };
+              }
+            }
+            cnt++;
+            continue;
+          }
+          // Otherwise iterate panel widths in PANEL_STEP increments
+          let pw = Math.min(maxP, Math.floor(run / cnt / PANEL_STEP) * PANEL_STEP);
           while (pw >= 200) {
-            // Modified gap calculation: cnt gaps instead of cnt+1 (gate replaces one gap)
             const gap = (run - pw * cnt) / cnt;
             if (gap >= min && gap <= max) return { panelWidths: Array(cnt).fill(pw), gap, run };
-            pw -= 25;
+            pw -= PANEL_STEP;
           }
           cnt++;
         }
@@ -1618,16 +1764,10 @@ function refreshSelectors() {
       const gateAdjustedMix = (run, min, max, maxP) => {
         let cnt = Math.ceil(run / maxP);
         while (cnt < 600) {
-          /*
-           * Iterate A and B in 25 mm increments rather than 50 mm to match updated panel size rules.
-           * Primary width A steps down by 25 mm until 200 mm. For each A, secondary width B steps
-           * down in 25 mm steps, allowing B to differ from A by up to 200 mm.
-           */
-          for (let A = maxP; A >= 200; A -= 25) {
-            for (let B = A; B >= A - 200; B -= 25) {
+          for (let A = maxP; A >= 200; A -= PANEL_STEP) {
+            for (let B = A; B >= A - 200; B -= PANEL_STEP) {
               for (let k = 1; k < cnt; k++) {
                 const tot = (cnt - k) * A + k * B;
-                // Modified gap calculation: cnt gaps instead of cnt+1
                 const gap = (run - tot) / cnt;
                 if (gap >= min && gap <= max) {
                   return { panelWidths: [...Array(cnt - k).fill(A), ...Array(k).fill(B)], gap, run };
@@ -1641,9 +1781,16 @@ function refreshSelectors() {
       };
 
       // First try the exact length
-      let bestLayout = allowMixed
-        ? (gateAdjustedMix(originalLen, minGap, maxGap, maxPanel) || gateAdjustedSym(originalLen, minGap, maxGap, maxPanel))
-        : (gateAdjustedSym(originalLen, minGap, maxGap, maxPanel) || gateAdjustedMix(originalLen, minGap, maxGap, maxPanel));
+      let bestLayout;
+      if (allowMixed) {
+        bestLayout = gateAdjustedMix(originalLen, minGap, maxGap, maxPanel) || gateAdjustedSym(originalLen, minGap, maxGap, maxPanel);
+      } else {
+        // For Standard mode (no mixed panels) use only symmetric solver; only attempt mix when step ≥1 mm and symmetric fails
+        bestLayout = gateAdjustedSym(originalLen, minGap, maxGap, maxPanel);
+        if (!bestLayout && PANEL_STEP >= 1) {
+          bestLayout = gateAdjustedMix(originalLen, minGap, maxGap, maxPanel);
+        }
+      }
       
       if (bestLayout) {
         bestLayout.adjustedLength = originalLen;
@@ -1657,9 +1804,15 @@ function refreshSelectors() {
           const adjustedLen = originalLen + (direction * nudge);
           if (adjustedLen < 200) continue;
           
-          const layout = allowMixed
-            ? (gateAdjustedMix(adjustedLen, minGap, maxGap, maxPanel) || gateAdjustedSym(adjustedLen, minGap, maxGap, maxPanel))
-            : (gateAdjustedSym(adjustedLen, minGap, maxGap, maxPanel) || gateAdjustedMix(adjustedLen, minGap, maxGap, maxPanel));
+          let layout;
+          if (allowMixed) {
+            layout = gateAdjustedMix(adjustedLen, minGap, maxGap, maxPanel) || gateAdjustedSym(adjustedLen, minGap, maxGap, maxPanel);
+          } else {
+            layout = gateAdjustedSym(adjustedLen, minGap, maxGap, maxPanel);
+            if (!layout && PANEL_STEP >= 1) {
+              layout = gateAdjustedMix(adjustedLen, minGap, maxGap, maxPanel);
+            }
+          }
           
           if (layout) {
             if (!bestLayout || layout.panelWidths.length < bestLayout.panelWidths.length) {
@@ -1678,9 +1831,20 @@ function refreshSelectors() {
     // Enhanced solver with run length nudging for "unlucky" lengths
     function findBestLayout(originalLen, minGap, maxGap, maxPanel, allowMixed) {
       // First try the exact length
-      let bestLayout = allowMixed
-        ? (sd50Mix(originalLen, minGap, maxGap, maxPanel) || sd50Sym(originalLen, minGap, maxGap, maxPanel))
-        : (sd50Sym(originalLen, minGap, maxGap, maxPanel) || sd50Mix(originalLen, minGap, maxGap, maxPanel));
+      let bestLayout;
+      if (allowMixed) {
+        // When mixed panels are allowed, try mixed solver first then symmetric solver as fallback
+        bestLayout = sd50Mix(originalLen, minGap, maxGap, maxPanel) || sd50Sym(originalLen, minGap, maxGap, maxPanel);
+      } else {
+        // In Standard mode we use only the symmetric solver to avoid the heavy mixed solver loops.
+        // The mixed solver may iterate extensively when using very small panel increments (e.g. 0.1 mm),
+        // so we disable it entirely when mixed panels are not permitted.
+        bestLayout = sd50Sym(originalLen, minGap, maxGap, maxPanel);
+        // Only try the mixed solver when panel steps are at least 1 mm and the symmetric solver failed.
+        if (!bestLayout && PANEL_STEP >= 1) {
+          bestLayout = sd50Mix(originalLen, minGap, maxGap, maxPanel);
+        }
+      }
       
       if (bestLayout) {
         bestLayout.adjustedLength = originalLen;
@@ -1695,9 +1859,16 @@ function refreshSelectors() {
           const adjustedLen = originalLen + (direction * nudge);
           if (adjustedLen < 200) continue; // Don't go below minimum reasonable length
           
-          const layout = allowMixed
-            ? (sd50Mix(adjustedLen, minGap, maxGap, maxPanel) || sd50Sym(adjustedLen, minGap, maxGap, maxPanel))
-            : (sd50Sym(adjustedLen, minGap, maxGap, maxPanel) || sd50Mix(adjustedLen, minGap, maxGap, maxPanel));
+          let layout;
+          if (allowMixed) {
+            layout = sd50Mix(adjustedLen, minGap, maxGap, maxPanel) || sd50Sym(adjustedLen, minGap, maxGap, maxPanel);
+          } else {
+            // For Standard mode use symmetric solver only; only attempt mixed solver if step ≥ 1 mm and symmetric fails
+            layout = sd50Sym(adjustedLen, minGap, maxGap, maxPanel);
+            if (!layout && PANEL_STEP >= 1) {
+              layout = sd50Mix(adjustedLen, minGap, maxGap, maxPanel);
+            }
+          }
           
           if (layout) {
             // Prefer solutions with fewer panels (wider panels)
@@ -1905,10 +2076,35 @@ function refreshSelectors() {
       }
       
       if (!lay) {
-        const errorMsg = gateRequired 
-          ? `No compliant layout found for side ${String.fromCharCode(65 + i)} with gate. Check that hinge panel can be 800-1500mm (100mm increments) or enable uniform panels to override.`
-          : `No compliant layout found even with ±5mm adjustment for side ${String.fromCharCode(65 + i)}`;
-        return alert(errorMsg);
+        /*
+         * If no layout could be found using the current panel increment step and we are in
+         * Standard mode (which uses 1 mm increments), attempt a fallback calculation
+         * using a coarser 10 mm increment. This helps avoid situations where very
+         * precise 1 mm stepping fails to yield a compliant layout, by broadening the
+         * search space slightly. After the fallback attempt we restore the original
+         * increment value regardless of success. Only if both attempts fail do we
+         * present an error to the user.
+         */
+        if (glassMode === 'standard' && PANEL_STEP === 0) {
+          const originalStep = PANEL_STEP;
+          // Coarse fallback: try a 10 mm step to broaden the search space if the
+          // 0.1 mm stepping fails to produce a layout. This still offers finer resolution
+          // than the stock sizes while reducing the number of iterations dramatically.
+          PANEL_STEP = 10;
+          // Recompute layout with the larger step size
+          lay = gateRequired
+            ? findGateAdjustedLayout(effectiveLength, gMin, gMax, cap, allowMix)
+            : findBestLayout(effectiveLength, gMin, gMax, cap, allowMix);
+          // Restore the original step for subsequent calculations
+          PANEL_STEP = originalStep;
+        }
+        // If still no layout, show the appropriate error message
+        if (!lay) {
+          const errorMsg = gateRequired
+            ? `No compliant layout found for side ${String.fromCharCode(65 + i)} with gate. Check that hinge panel can be 800-1500mm (100mm increments) or enable uniform panels to override.`
+            : `No compliant layout found even with ±5mm adjustment for side ${String.fromCharCode(65 + i)}`;
+          return alert(errorMsg);
+        }
       }
       
       // Show adjustment info if length was nudged
@@ -1949,14 +2145,22 @@ function refreshSelectors() {
     let gateCountTmp = 0;
     layouts.forEach((l) => { if (l.gateSegment) gateCountTmp++; });
     let discsTotal = posts + gateCountTmp * 2;
-    // Group panel sizes and show disc count per size
+    // Group panel sizes and show disc count per size.
+    // When PANEL_STEP <= 0 (Standard mode with continuous widths), group
+    // widths by rounding to two decimal places. This avoids creating
+    // separate groups for widths that only differ by tiny floating‑point
+    // amounts.  Display widths to two decimal places for clarity.
     const panelSummary = (() => {
       const m = {};
-      panels.forEach(w => m[w] = (m[w] || 0) + 1);
+      panels.forEach(w => {
+        const key = PANEL_STEP <= 0 ? (Math.round(w * 100) / 100).toFixed(2) : String(w);
+        m[key] = (m[key] || 0) + 1;
+      });
       return Object.entries(m)
-        .map(([w, n]) => {
-          let spigs = Math.max(2, Math.ceil((w - 2 * edge) / MAX_SPACING) + 1);
-          return `${n} × @${w} mm (${spigs} spigots each)`;
+        .map(([wStr, n]) => {
+          const widthNum = parseFloat(wStr);
+          let spigs = Math.max(2, Math.ceil((widthNum - 2 * edge) / MAX_SPACING) + 1);
+          return `${n} × @${wStr} mm (${spigs} spigots each)`;
         })
         .join('<br>');
     })();
